@@ -88,4 +88,67 @@ app.listen(3000, function () {
             deleteFileFromS3(filePath + filename, filename);
         }
     });
+
+    var lastcount = 0;
+    var del = 0;
+    var interval = setInterval(function() {
+
+        var params = {
+            Bucket: myBucket, /* required */
+        };
+        s3.listObjects(params, function(err, data) {
+            if (err) console.log(err, err.stack); // an error occurred
+            else {
+                var array = [];
+
+                for(var i = 0; i < data.Contents.length; i++) {
+
+
+                    array.push(data.Contents[i].Key);
+                }
+                if(lastcount > array.length) {
+                    del++;
+                }
+                lastcount = array.length;
+                console.log("last" + lastcount + "    " +"arr " + array.length);
+                console.log(array);
+
+                for(var i = 0; i < data.Contents.length; i++) {
+
+                    if (!fs.existsSync(filePath + data.Contents[i].Key)) {
+                        var params = {
+                            Bucket: myBucket, /* required */
+                            Key: data.Contents[i].Key, /* required */
+                        };
+
+                        var file = fs.createWriteStream(filePath + data.Contents[i].Key);
+                        file.on('close', function(){
+                            console.log('done');  //prints, file created
+
+                        });
+
+                        s3.getObject(params).createReadStream().on('error', function(err){
+                            console.log(err);
+                        }).pipe(file);
+
+                        array.push(data.Contents[i].Key);
+                    }
+
+                    for(var j = 0; j < array.length; j++) {
+
+                        if((array[j] == data.Contents[i].Key) || lastcount < array.length) {
+                            console.log("found   " + file);
+                            break;
+                        }
+                        console.log(" not found   ");
+                        if(del > 0) {
+                            fs.unlinkSync(filePath + array[j]);
+                            del = 0;
+                        }
+                    }
+                }
+            }
+        });
+        console.log("Hello." + lastcount);
+    }, 5000);
 })
