@@ -41,15 +41,6 @@ app.get('/test', function(req, res) {
     res.send('TEST!')
 })
 
-// app.get("/dropbox", function(req, res) {
-//     fs.watch(filePath, function (event, filename) {
-//         if (fs.existsSync(filePath + filename)) {
-//             uploadFileToS3(filename);
-//         } else {
-//             deleteFileFromS3(filename);
-//         }
-//     });
-// })
 
 function uploadFileToS3(filename, name) {
     fs.readFile(filename, function (err, data) {
@@ -78,9 +69,97 @@ function deleteFileFromS3(filename, name) {
     });
 }
 
+function chkModifiedOnS3() {
+    var params = {
+        Bucket: myBucket, /* required */
+    };
+    s3.listObjects(params, function(err, data) {
+        if (err) console.log(err, err.stack); // an error occurred
+        else {
+            for (var i = 0; i < data.Contents.length; i++) {
+                for (var j = 0; j < localDirArrayB.length; j++) {
+                    if(localDirArrayB[j] < data.Contents[i].LastModified) {
+                        console.log(data.Contents[i].Key + " outdated");
+
+                        fs.unlinkSync(filePath + data.Contents[i].Key);
+
+                        var file = fs.createWriteStream(filePath + data.Contents[i].Key);
+                        file.on('close', function () {
+                            //console.log('done');  //file created
+                        });
+
+                        s3.getObject(params).createReadStream().on('error', function (err) {
+                            console.log(err);
+                        }).pipe(file);
+
+                        console.log(" <-> " + data.Contents[i].Key);
+                    }
+
+                }
+            }
+        }
+    });
+}
+
+
+function fileAddedOnS3() {
+    var params = {
+        Bucket: myBucket, /* required */
+    };
+    s3.listObjects(params, function(err, data) {
+        if (err) console.log(err, err.stack); // an error occurred
+        else {
+
+            for (var i = 0; i < data.Contents.length; i++) {
+
+                if (!fs.existsSync(filePath + data.Contents[i].Key)) {
+                    var params = {
+                        Bucket: myBucket, /* required */
+                        Key: data.Contents[i].Key, /* required */
+                    };
+
+                    var file = fs.createWriteStream(filePath + data.Contents[i].Key);
+                    file.on('close', function () {
+                        //console.log('done');  //file created
+                    });
+
+                    s3.getObject(params).createReadStream().on('error', function (err) {
+                        console.log(err);
+                    }).pipe(file);
+
+                    console.log(" <- " + data.Contents[i].Key);
+                }
+            }
+        }
+    });
+}
+
+function fileDeletedOnS3() {
+    var params = {
+        Bucket: myBucket, /* required */
+    };
+    s3.listObjects(params, function(err, data) {
+        if (err) console.log(err, err.stack); // an error occurred
+        else {
+            for (var i = 0; i < data.Contents.length; i++) {
+                for(var j = 0; j < localDirArray.length; j++) {
+                    if(localDirArray[j] == data.Contents[i].Key) {
+                        break;    // found
+                    }
+                    // not found, delete
+                    fs.unlinkSync(filePath + localDirArray[j]);
+
+                    console.log(" " + localDirArray[j] + " -> X");
+                }
+            }
+        }
+    });
+}
+
 app.listen(3000, function () {
     console.log('Example app listening on port 3000')
 
+    // sync local folder activities back to bucket
     fs.watch(filePath, function (event, filename) {
         if (fs.existsSync(filePath + filename)) {
             uploadFileToS3(filePath + filename, filename);
@@ -89,9 +168,13 @@ app.listen(3000, function () {
         }
     });
 
-    var lastcount = 0;
-    var del = 0;
-    var interval = setInterval(function() {
+    var s3BucketArray = [];
+    var localDirArray = [];
+    var localDirArrayB = [];
+
+    // monitor file counts
+    var chkS3size = setInterval(function() {
+        localDirArray = fs.readdirSync(filePath);
 
         var params = {
             Bucket: myBucket, /* required */
@@ -99,56 +182,32 @@ app.listen(3000, function () {
         s3.listObjects(params, function(err, data) {
             if (err) console.log(err, err.stack); // an error occurred
             else {
-                var array = [];
+                var temp = [];
+                var tempB = [];
 
                 for(var i = 0; i < data.Contents.length; i++) {
-
-
-                    array.push(data.Contents[i].Key);
+                    temp.push(data.Contents[i].Key);
+                    tempB.push(data.Contents[i].LastModified);
                 }
-                if(lastcount > array.length) {
-                    del++;
-                }
-                lastcount = array.length;
-                console.log("last" + lastcount + "    " +"arr " + array.length);
-                console.log(array);
-
-                for(var i = 0; i < data.Contents.length; i++) {
-
-                    if (!fs.existsSync(filePath + data.Contents[i].Key)) {
-                        var params = {
-                            Bucket: myBucket, /* required */
-                            Key: data.Contents[i].Key, /* required */
-                        };
-
-                        var file = fs.createWriteStream(filePath + data.Contents[i].Key);
-                        file.on('close', function(){
-                            console.log('done');  //prints, file created
-
-                        });
-
-                        s3.getObject(params).createReadStream().on('error', function(err){
-                            console.log(err);
-                        }).pipe(file);
-
-                        array.push(data.Contents[i].Key);
-                    }
-
-                    for(var j = 0; j < array.length; j++) {
-
-                        if((array[j] == data.Contents[i].Key) || lastcount < array.length) {
-                            console.log("found   " + file);
-                            break;
-                        }
-                        console.log(" not found   ");
-                        if(del > 0) {
-                            fs.unlinkSync(filePath + array[j]);
-                            del = 0;
-                        }
-                    }
-                }
+                s3BucketArray = temp;
+                localDirArrayB = tempB;
             }
         });
-        console.log("Hello." + lastcount);
-    }, 5000);
+    }, 10);
+
+
+    // sync bucket activities back to local every 3 secs
+    var interval = setInterval(function() {
+
+        if(localDirArray.length < s3BucketArray.length) {
+            fileAddedOnS3();
+        }
+        else if(localDirArray.length > s3BucketArray.length) {
+            fileDeletedOnS3();
+        }
+
+        //chkModifiedOnS3();  // bug
+
+        console.log(localDirArray.length + " <-> " + s3BucketArray.length);
+    }, 3000);
 })
